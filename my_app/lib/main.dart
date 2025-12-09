@@ -1,31 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+import 'models/habit.dart';
+import 'data/repositories/habit_repository.dart';
+import 'data/services/advice_service.dart';
 
 void main() {
   runApp(const MainApp());
-}
-
-class Habit {
-  const Habit({
-    required this.title,
-    required this.note,
-    this.completedToday = false,
-  });
-
-  final String title;
-  final String note;
-  final bool completedToday;
-
-  Habit copyWith({
-    String? title,
-    String? note,
-    bool? completedToday,
-  }) {
-    return Habit(
-      title: title ?? this.title,
-      note: note ?? this.note,
-      completedToday: completedToday ?? this.completedToday,
-    );
-  }
 }
 
 class MainApp extends StatelessWidget {
@@ -53,21 +33,39 @@ class HabitAppShell extends StatefulWidget {
 }
 
 class _HabitAppShellState extends State<HabitAppShell> {
+  final HabitRepository _repository = HabitRepository();
   int _currentIndex = 0;
-  final List<Habit> _habits = [
-    Habit(title: 'Чтение', note: '20 минут перед сном'),
-    Habit(title: 'Спорт', note: 'Три подхода планки', completedToday: true),
-    Habit(title: 'Вода', note: '8 стаканов в день'),
-  ];
+  List<Habit> _habits = [];
+  bool _isLoading = true;
 
-  void _toggleHabit(Habit habit) {
+  @override
+  void initState() {
+    super.initState();
+    _loadHabits();
+  }
+
+  Future<void> _loadHabits() async {
     setState(() {
-      final idx = _habits.indexOf(habit);
+      _isLoading = true;
+    });
+    final habits = await _repository.loadHabits();
+    setState(() {
+      _habits = habits;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _toggleHabit(Habit habit) async {
+    final updatedHabit = habit.copyWith(
+      completedToday: !habit.completedToday,
+    );
+    setState(() {
+      final idx = _habits.indexWhere((h) => h.id == habit.id);
       if (idx != -1) {
-        _habits[idx] =
-            habit.copyWith(completedToday: !habit.completedToday);
+        _habits[idx] = updatedHabit;
       }
     });
+    await _repository.updateHabit(updatedHabit);
   }
 
   Future<void> _createHabit(BuildContext context) async {
@@ -78,9 +76,8 @@ class _HabitAppShellState extends State<HabitAppShell> {
       ),
     );
     if (result != null) {
-      setState(() {
-        _habits.add(result);
-      });
+      await _repository.addHabit(result);
+      await _loadHabits();
     }
   }
 
@@ -92,12 +89,8 @@ class _HabitAppShellState extends State<HabitAppShell> {
       ),
     );
     if (result != null) {
-      setState(() {
-        final idx = _habits.indexOf(habit);
-        if (idx != -1) {
-          _habits[idx] = result;
-        }
-      });
+      await _repository.updateHabit(result);
+      await _loadHabits();
     }
   }
 
@@ -118,6 +111,7 @@ class _HabitAppShellState extends State<HabitAppShell> {
     final pages = [
       HabitHomeScreen(
         habits: _habits,
+        isLoading: _isLoading,
         onAdd: () => _createHabit(context),
         onToggle: _toggleHabit,
         onOpenDetails: (habit) => _openDetails(context, habit),
@@ -154,6 +148,7 @@ class HabitHomeScreen extends StatelessWidget {
   const HabitHomeScreen({
     super.key,
     required this.habits,
+    required this.isLoading,
     required this.onAdd,
     required this.onToggle,
     required this.onOpenDetails,
@@ -161,6 +156,7 @@ class HabitHomeScreen extends StatelessWidget {
   });
 
   final List<Habit> habits;
+  final bool isLoading;
   final VoidCallback onAdd;
   final void Function(Habit) onToggle;
   final void Function(Habit) onOpenDetails;
@@ -184,28 +180,61 @@ class HabitHomeScreen extends StatelessWidget {
         icon: const Icon(Icons.add),
         label: const Text('Новая привычка'),
       ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _DaySelector(),
-          Expanded(
-            child: ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemBuilder: (context, index) {
-                final habit = habits[index];
-                return HabitCard(
-                  habit: habit,
-                  onToggle: () => onToggle(habit),
-                  onTap: () => onOpenDetails(habit),
-                  onEdit: () => onEdit(habit),
-                );
-              },
-              separatorBuilder: (context, index) => const SizedBox(height: 12),
-              itemCount: habits.length,
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _DaySelector(),
+                Expanded(
+                  child: habits.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.checklist_outlined,
+                                size: 64,
+                                color: Theme.of(context).colorScheme.outline,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'Нет привычек',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Нажмите + чтобы добавить',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outline,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.all(16),
+                          itemBuilder: (context, index) {
+                            final habit = habits[index];
+                            return HabitCard(
+                              habit: habit,
+                              onToggle: () => onToggle(habit),
+                              onTap: () => onOpenDetails(habit),
+                              onEdit: () => onEdit(habit),
+                            );
+                          },
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 12),
+                          itemCount: habits.length,
+                        ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -299,7 +328,7 @@ class _DaySelector extends StatelessWidget {
           return ChoiceChip(
             label: Text(days[index]),
             selected: isToday,
-            onSelected: null, // Логика выбора будет позже
+            onSelected: null,
           );
         },
         separatorBuilder: (context, index) => const SizedBox(width: 8),
@@ -309,7 +338,7 @@ class _DaySelector extends StatelessWidget {
   }
 }
 
-class HabitDetailsScreen extends StatelessWidget {
+class HabitDetailsScreen extends StatefulWidget {
   const HabitDetailsScreen({
     super.key,
     required this.habit,
@@ -320,6 +349,36 @@ class HabitDetailsScreen extends StatelessWidget {
   final VoidCallback onEdit;
 
   @override
+  State<HabitDetailsScreen> createState() => _HabitDetailsScreenState();
+}
+
+class _HabitDetailsScreenState extends State<HabitDetailsScreen> {
+  final AdviceService _adviceService = AdviceService();
+  String? _advice;
+  bool _isLoadingAdvice = false;
+  String? _error;
+
+  Future<void> _fetchAdvice() async {
+    setState(() {
+      _isLoadingAdvice = true;
+      _error = null;
+    });
+
+    try {
+      final advice = await _adviceService.getAdvice();
+      setState(() {
+        _advice = advice;
+        _isLoadingAdvice = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = 'Не удалось загрузить цитату. Проверьте подключение к интернету.';
+        _isLoadingAdvice = false;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
@@ -327,7 +386,7 @@ class HabitDetailsScreen extends StatelessWidget {
         title: const Text('Детали привычки'),
         actions: [
           IconButton(
-            onPressed: onEdit,
+            onPressed: widget.onEdit,
             icon: const Icon(Icons.edit_outlined),
             tooltip: 'Редактировать',
           ),
@@ -338,18 +397,23 @@ class HabitDetailsScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(habit.title, style: Theme.of(context).textTheme.headlineSmall),
+            Text(
+              widget.habit.title,
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
             const SizedBox(height: 8),
             Text(
-              habit.note,
+              widget.habit.note,
               style: Theme.of(context)
                   .textTheme
                   .bodyMedium
                   ?.copyWith(color: colorScheme.outline),
             ),
             const SizedBox(height: 16),
-            Text('Прогресс за 7 дней',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Прогресс за 7 дней',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -358,15 +422,19 @@ class HabitDetailsScreen extends StatelessWidget {
                 7,
                 (index) => _DayChip(
                   label: 'День ${index + 1}',
-                  done: index <= 3 ? habit.completedToday : !habit.completedToday,
+                  done: index <= 3
+                      ? widget.habit.completedToday
+                      : !widget.habit.completedToday,
                 ),
               ),
             ),
             const SizedBox(height: 24),
             const Divider(),
             const SizedBox(height: 16),
-            Text('Мотивация',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Мотивация',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
@@ -375,16 +443,24 @@ class HabitDetailsScreen extends StatelessWidget {
                 color: colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Text(
-                'Здесь будет цитата с публичного API.\n'
-                'Пока статический текст.',
-              ),
+              child: _isLoadingAdvice
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? Text(
+                          _error!,
+                          style: TextStyle(color: colorScheme.error),
+                        )
+                      : _advice != null
+                          ? Text(_advice!)
+                          : const Text(
+                              'Нажмите кнопку ниже, чтобы получить мотивационную цитату.',
+                            ),
             ),
             const Spacer(),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: null, // Будет реализовано в ЛР6
+                onPressed: _isLoadingAdvice ? null : _fetchAdvice,
                 icon: const Icon(Icons.auto_awesome),
                 label: const Text('Получить цитату'),
               ),
@@ -488,6 +564,7 @@ class HabitEditScreen extends StatelessWidget {
                         return;
                       }
                       final habit = Habit(
+                        id: initialHabit?.id ?? const Uuid().v4(),
                         title: title,
                         note: noteController.text.trim(),
                         completedToday: completed,
